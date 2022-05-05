@@ -1944,7 +1944,7 @@ ssh_keylog_process_line(const char *line)
     size_t cookie_len, key_len;
 
     if (g_strv_length(split) != 2) {
-        ws_debug("ssh keylog: invalid format");
+        ws_debug("ssh keylog: invalid format!");
         g_strfreev(split);
         return;
     }
