@@ -2507,6 +2507,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
 //        ssh_print_data(is_response?"s2c encrypted":"c2s encrypted", ctext2, message_length+4+mac_len);
         ssh_debug_printf("%s plain text seq=%d", is_response?"s2c":"c2s",seqnr);
         ssh_print_data("", plain, message_length+4);
+#if defined(__DESACTIVE_ICI)
     } else if (CIPHER_AES128_GCM == peer_data->cipher_id || CIPHER_AES256_GCM == peer_data->cipher_id) {
 
         mac_len = peer_data->mac_length;
@@ -2581,7 +2582,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
         plain = message->plain_data;
         message_length = message->data_len - 4;
         mac = (gchar *)tvb_get_ptr(tvb, offset + 4 + message_length, mac_len);
-
+#endif //defined(__DESACTIVE_ICI)
     }
 
     if(plain){
