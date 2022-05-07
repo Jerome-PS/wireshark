@@ -2531,8 +2531,8 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
             /* gcry_cipher_setiv(peer_data->cipher, iv, 12); */
             if ((err = gcry_cipher_setiv(peer_data->cipher, peer_data->iv, 12))) {
                 gcry_cipher_close(peer_data->cipher);
-//                g_debug("ssh: can't set aes128 cipher iv");
-//                g_debug("libgcrypt: %d %s %s", gcry_err_code(err), gcry_strsource(err), gcry_strerror(err));
+                g_debug("ssh: can't set aes128 cipher iv");
+                g_debug("libgcrypt: %d %s %s", gcry_err_code(err), gcry_strsource(err), gcry_strerror(err));
                 return offset;
             }
             int idx = 12;
