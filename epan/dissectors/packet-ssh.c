@@ -2507,7 +2507,6 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
 //        ssh_print_data(is_response?"s2c encrypted":"c2s encrypted", ctext2, message_length+4+mac_len);
         ssh_debug_printf("%s plain text seq=%d", is_response?"s2c":"c2s",seqnr);
         ssh_print_data("", plain, message_length+4);
-#if defined(__DESACTIVE_ICI)
     } else if (CIPHER_AES128_GCM == peer_data->cipher_id || CIPHER_AES256_GCM == peer_data->cipher_id) {
 
         mac_len = peer_data->mac_length;
@@ -2516,8 +2515,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
         const gchar *plain_buf = (const gchar *)tvb_get_ptr(tvb, offset, 4);
         message_length = pntoh32(plain_buf);
         guint remaining = tvb_reported_length_remaining(tvb, offset);
-        ssh_debug_printf("length: %d, remaining: %d\n",
-                message_length, remaining);
+        ssh_debug_printf("length: %d, remaining: %d\n", message_length, remaining);
 
         if(message->plain_data && message->data_len){
             message_length = message->data_len - 4;
@@ -2533,8 +2531,8 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
             /* gcry_cipher_setiv(peer_data->cipher, iv, 12); */
             if ((err = gcry_cipher_setiv(peer_data->cipher, peer_data->iv, 12))) {
                 gcry_cipher_close(peer_data->cipher);
-                g_debug("ssh: can't set aes128 cipher iv");
-                g_debug("libgcrypt: %d %s %s", gcry_err_code(err), gcry_strsource(err), gcry_strerror(err));
+//                g_debug("ssh: can't set aes128 cipher iv");
+//                g_debug("libgcrypt: %d %s %s", gcry_err_code(err), gcry_strsource(err), gcry_strerror(err));
                 return offset;
             }
             int idx = 12;
@@ -2544,7 +2542,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
             }while(idx>4 && peer_data->iv[idx]==0);
 
             if ((err = gcry_cipher_authenticate(peer_data->cipher, plain, 4))) {
-                g_debug ("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
+//                g_debug ("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
                 return offset;
             }
 
@@ -2554,20 +2552,19 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
                 if (gcry_cipher_decrypt(peer_data->cipher, plain+4+offs, 16,
                         ctext+offs, 16))
                 {
-                    g_debug("can\'t decrypt aes128");
+//                    g_debug("can\'t decrypt aes128");
                     return offset;
                 }
                 offs += 16;
             }
 
             if (gcry_cipher_gettag (peer_data->cipher, message->calc_mac, 16)) {
-                g_debug ("aes128-gcm, gcry_cipher_gettag() failed\n");
+//                g_debug ("aes128-gcm, gcry_cipher_gettag() failed\n");
                 return offset;
             }
 
             if ((err = gcry_cipher_reset(peer_data->cipher))) {
-                g_debug ("aes-gcm, gcry_cipher_reset failed: %s\n",
-                    gpg_strerror (err));
+//                g_debug ("aes-gcm, gcry_cipher_reset failed: %s\n", gpg_strerror (err));
                 return offset;
             }
 
@@ -2582,7 +2579,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
         plain = message->plain_data;
         message_length = message->data_len - 4;
         mac = (gchar *)tvb_get_ptr(tvb, offset + 4 + message_length, mac_len);
-#endif //defined(__DESACTIVE_ICI)
+
     }
 
     if(plain){
