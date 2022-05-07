@@ -2531,8 +2531,9 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
             /* gcry_cipher_setiv(peer_data->cipher, iv, 12); */
             if ((err = gcry_cipher_setiv(peer_data->cipher, peer_data->iv, 12))) {
                 gcry_cipher_close(peer_data->cipher);
-                g_debug("ssh: can't set aes128 cipher iv");
-                g_debug("libgcrypt: %d %s %s", gcry_err_code(err), gcry_strsource(err), gcry_strerror(err));
+// TODO: temporary work-around as long as a Windows python bug is triggered by automated tests
+                ws_noisy("ssh: can't set aes128 cipher iv");
+                ws_noisy("libgcrypt: %d %s %s", gcry_err_code(err), gcry_strsource(err), gcry_strerror(err));
                 return offset;
             }
             int idx = 12;
@@ -2543,7 +2544,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
 
             if ((err = gcry_cipher_authenticate(peer_data->cipher, plain, 4))) {
 // TODO: temporary work-around as long as a Windows python bug is triggered by automated tests
-                ws_noisy ("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
+                ws_noisy("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
                 return offset;
             }
 
