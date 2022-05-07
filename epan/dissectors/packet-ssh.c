@@ -2558,19 +2558,28 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
                 if (gcry_cipher_decrypt(peer_data->cipher, plain+4+offs, 16,
                         ctext+offs, 16))
                 {
-//                    g_debug("can\'t decrypt aes128");
+// TODO: temporary work-around as long as a Windows python bug is triggered by automated tests
+#ifndef _WIN32
+                    ws_debug("can\'t decrypt aes128");
+#endif	//ndef _WIN32
                     return offset;
                 }
                 offs += 16;
             }
 
             if (gcry_cipher_gettag (peer_data->cipher, message->calc_mac, 16)) {
-//                g_debug ("aes128-gcm, gcry_cipher_gettag() failed\n");
+// TODO: temporary work-around as long as a Windows python bug is triggered by automated tests
+#ifndef _WIN32
+                ws_debug ("aes128-gcm, gcry_cipher_gettag() failed\n");
+#endif	//ndef _WIN32
                 return offset;
             }
 
             if ((err = gcry_cipher_reset(peer_data->cipher))) {
-//                g_debug ("aes-gcm, gcry_cipher_reset failed: %s\n", gpg_strerror (err));
+// TODO: temporary work-around as long as a Windows python bug is triggered by automated tests
+#ifndef _WIN32
+                ws_debug ("aes-gcm, gcry_cipher_reset failed: %s\n", gpg_strerror (err));
+#endif	//ndef _WIN32
                 return offset;
             }
 
