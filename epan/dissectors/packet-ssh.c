@@ -2542,7 +2542,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
             }while(idx>4 && peer_data->iv[idx]==0);
 
             if ((err = gcry_cipher_authenticate(peer_data->cipher, plain, 4))) {
-//                g_debug ("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
+                g_debug ("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
                 return offset;
             }
 
