@@ -2544,7 +2544,7 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
 
             if ((err = gcry_cipher_authenticate(peer_data->cipher, plain, 4))) {
 // TODO: temporary work-around as long as a Windows python bug is triggered by automated tests
-                ws_noisy("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
+//                ws_noisy("can't authenticate using aes128-gcm: %s\n", gpg_strerror(err));
                 return offset;
             }
 
