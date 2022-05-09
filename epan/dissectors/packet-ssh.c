@@ -585,7 +585,7 @@ static gboolean ssh_read_e(tvbuff_t *tvb, int offset,
 static gboolean ssh_read_f(tvbuff_t *tvb, int offset,
         struct ssh_flow_data *global_data);
 static void ssh_keylog_hash_write_secret(struct ssh_flow_data *global_data);
-static ssh_bignum *ssh_kex_shared_secret(gint kex_type, ssh_bignum *pub, ssh_bignum *priv);
+static ssh_bignum *ssh_kex_shared_secret(gint kex_type, ssh_bignum *pub, ssh_bignum *priv, ssh_bignum *modulo);
 static void ssh_hash_buffer_put_string(wmem_array_t *buffer, const gchar *string,
         guint len);
 static void ssh_hash_buffer_put_uint32(wmem_array_t *buffer, guint val);
@@ -2151,6 +2151,7 @@ ssh_read_f(tvbuff_t *tvb, int offset, struct ssh_flow_data *global_data)
     return true;
 }
 
+#ifdef SSH_DECRYPTION_SUPPORTED
 static ssh_bignum *
 ssh_read_mpint(tvbuff_t *tvb, int offset)
 {
@@ -2164,6 +2165,7 @@ ssh_read_mpint(tvbuff_t *tvb, int offset)
     tvb_memcpy(tvb, bn->data, offset + 4, length);
     return bn;
 }
+#endif	//def SSH_DECRYPTION_SUPPORTED
 
 static void
 ssh_keylog_hash_write_secret(struct ssh_flow_data *global_data)
