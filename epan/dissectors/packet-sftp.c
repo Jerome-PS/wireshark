@@ -28,7 +28,11 @@
 #define WS_LOG_DOMAIN "sftp"
 
 #include <epan/packet.h>
+#include <epan/reassemble.h>
+#include <epan/conversation.h>
 #include <epan/expert.h>
+
+#include "packet-ssh.h"
 
 void proto_register_sftp(void);
 
@@ -66,10 +70,50 @@ static int hf_ssh_sftp_data = -1;
 static int hf_ssh_lang_tag_length = -1;
 static int hf_ssh_lang_tag = -1;
 
+static int hf_sftp_data_fragments = -1;
+static int hf_sftp_data_fragment = -1;
+static int hf_sftp_data_fragment_overlap = -1;
+static int hf_sftp_data_fragment_overlap_conflicts = -1;
+static int hf_sftp_data_fragment_multiple_tails = -1;
+static int hf_sftp_data_fragment_too_long_fragment = -1;
+static int hf_sftp_data_fragment_error = -1;
+static int hf_sftp_data_fragment_count = -1;
+static int hf_sftp_data_reassembled_in = -1;
+static int hf_sftp_data_reassembled_length = -1;
+
+/* For reassembly */
+static gint32 sftp_last_pdu = -1;
+
 static gint ett_sftp = -1;
 static gint ett_sftp_attrs = -1;
 
 static dissector_handle_t sftp_handle;
+
+static gint ett_sftp_data_fragment = -1;
+static gint ett_sftp_data_fragments = -1;
+
+static const fragment_items sftp_frag_items = {
+  /* Fragment subtrees */
+  &ett_sftp_data_fragment,
+  &ett_sftp_data_fragments,
+  /* Fragment fields */
+  &hf_sftp_data_fragments,
+  &hf_sftp_data_fragment,
+  &hf_sftp_data_fragment_overlap,
+  &hf_sftp_data_fragment_overlap_conflicts,
+  &hf_sftp_data_fragment_multiple_tails,
+  &hf_sftp_data_fragment_too_long_fragment,
+  &hf_sftp_data_fragment_error,
+  &hf_sftp_data_fragment_count,
+  /* Reassembled in field */
+  &hf_sftp_data_reassembled_in,
+  /* Reassembled length field */
+  &hf_sftp_data_reassembled_length,
+  /* Reassembled data field */
+  NULL,
+  /* Tag */
+  "SFTP fragments"
+};
 
 #define SSH_FXP_INIT                1
 #define SSH_FXP_VERSION             2
@@ -142,18 +186,265 @@ static const value_string ssh2_sftp_vals[] = {
     {0, NULL}
 };
 
-static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U_);
+static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data);
 static int dissect_sftp_attrs(tvbuff_t *packet_tvb, packet_info *pinfo,
         int offset, proto_item *msg_type_tree);
 
-//static int dissect_sftp(tvbuff_t *packet_tvb, packet_info *pinfo,
-//        int offset, proto_item *msg_type_tree)
-static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U_)
+
+struct sftp_multisegment_pdu {
+    guint nxtpdu;
+    guint32 first_frame;
+    guint32 running_size;
+    gboolean finished;
+    gboolean reassembled;
+
+    guint plen;
+
+    guint32 flags;
+    #define MSP_FLAGS_REASSEMBLE_ENTIRE_SEGMENT	0x00000001
+    #define MSP_FLAGS_GOT_ALL_SEGMENTS          0x00000002
+    #define MSP_FLAGS_MISSING_FIRST_SEGMENT     0x00000004
+};
+
+static struct sftp_multisegment_pdu *
+pdu_store(guint32 key, wmem_tree_t *multisegment_pdus, guint32 first_frame)
+{
+    struct sftp_multisegment_pdu *msp;
+
+    msp = wmem_new(wmem_file_scope(), struct sftp_multisegment_pdu);
+    msp->first_frame = first_frame;
+    msp->finished = FALSE;
+    msp->reassembled = FALSE;
+    msp->flags = 0;
+    wmem_tree_insert32(multisegment_pdus, key, (void *)msp);
+
+    return msp;
+}
+
+struct sftp_analysis {
+    wmem_tree_t *multisegment_pdus[2];
+};
+
+static struct sftp_analysis *
+init_sftp_conversation_data(void)
+{
+    struct sftp_analysis *sftpd;
+
+    sftpd = wmem_new0(wmem_file_scope(), struct sftp_analysis);
+
+    sftpd->multisegment_pdus[0] = wmem_tree_new(wmem_file_scope());
+    sftpd->multisegment_pdus[1] = wmem_tree_new(wmem_file_scope());
+
+    return sftpd;
+}
+
+static struct sftp_analysis *
+get_sftp_conversation_data(conversation_t *conv, packet_info *pinfo)
+{
+    struct sftp_analysis *sftpd;
+
+    if(conv == NULL ) {
+        conv = find_or_create_conversation(pinfo);
+    }
+
+    sftpd = (struct sftp_analysis *)conversation_get_proto_data(conv, proto_sftp);
+
+    if (!sftpd) {
+        sftpd = init_sftp_conversation_data();
+        conversation_add_proto_data(conv, proto_sftp, sftpd);
+    }
+
+    return sftpd;
+}
+
+
+/*AFAC???
+static gpointer sftp_temporary_key(const packet_info *pinfo _U_, const guint32 id _U_, const void *data)
+{
+    return (gpointer)data;
+}
+
+static gpointer sftp_persistent_key(const packet_info *pinfo _U_, const guint32 id _U_, const void *data)
+{
+    return (gpointer)data;
+}
+
+static void sftp_free_temporary_key(gpointer ptr _U_) { }
+
+static void sftp_free_persistent_key(gpointer ptr _U_) { }
+*/
+
+/*AFAC???
+static reassembly_table_functions sftp_reassembly_table_functions =
+{
+    g_direct_hash,
+    g_direct_equal,
+    sftp_temporary_key,
+    sftp_persistent_key,
+    sftp_free_temporary_key,
+    sftp_free_persistent_key
+};*/
+
+//AFAC??? static dissector_table_t sftp_dissector_table;
+static reassembly_table sftp_reassembly_table;
+
+/*
+ * Look up an fd_head in the fragment table, optionally returning the key
+ * for it.
+ */
+static fragment_head *
+lookup_fd_head(reassembly_table *table, const packet_info *pinfo,
+	       const guint32 id, const void *data, gpointer *orig_keyp)
+{
+	gpointer key;
+	gpointer value;
+
+	/* Create key to search hash with */
+	key = table->temporary_key_func(pinfo, id, data);
+
+	/*
+	 * Look up the reassembly in the fragment table.
+	 */
+	if (!g_hash_table_lookup_extended(table->fragment_table, key, orig_keyp,
+					  &value))
+		value = NULL;
+	/* Free the key */
+	table->free_temporary_key_func(key);
+
+	return (fragment_head *)value;
+}
+
+static int dissect_reassembled_sftp(tvbuff_t *packet_tvb, packet_info *pinfo, int offset, proto_item *msg_type_tree);
+static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data)
 {
         int offset = 0;
-        guint   plen;
-        guint   slen;
-        plen = tvb_get_ntohl(tvb, offset) ;
+        tvbuff_t                  *next_tvb;(void)next_tvb;
+        struct sftp_multisegment_pdu *new_msp = NULL;
+        struct sftp_multisegment_pdu *previous_msp = NULL;
+        struct sftp_analysis *sftpd = NULL;
+        conversation_t *conv = NULL;
+        gboolean save_fragmented = pinfo->fragmented;
+        ssh_channel * chan = (ssh_channel *)data;
+        gboolean    direction = (pinfo->destport != pinfo->match_uint)?0:1;
+
+        guint captured_length = tvb_captured_length(tvb);
+        gint reported_length = tvb_reported_length(tvb);
+        proto_tree_add_debug_text(tree, "SFTP{%4d}captured_length=%u, reported_length=%d, rcpt_chan=%u", pinfo?(int)pinfo->num:-42, captured_length, reported_length, chan->channel_recipient);
+
+        if((conv = find_conversation_pinfo(pinfo, 0)) != NULL) {
+        /* Update how far the conversation reaches */
+                if (pinfo->num > conv->last_frame) {
+                        conv->last_frame = pinfo->num;
+                }
+        } else {
+                conv = conversation_new(pinfo->num, &pinfo->src, &pinfo->dst, ENDPOINT_TCP, pinfo->srcport, pinfo->destport, 0);
+        }
+
+        sftpd = get_sftp_conversation_data(conv, pinfo);
+
+        guint available = tvb_reported_length_remaining(tvb, offset);
+        guint consumed = 0;
+
+        previous_msp = (struct sftp_multisegment_pdu *)wmem_tree_lookup32(sftpd->multisegment_pdus[direction], chan->packet_id);
+        if(previous_msp){
+                new_msp = previous_msp;
+                previous_msp = (struct sftp_multisegment_pdu *)wmem_tree_lookup32_le(sftpd->multisegment_pdus[direction], chan->packet_id-1);
+                if(previous_msp && previous_msp->finished){
+                        previous_msp = NULL;
+                }
+        } else {
+                previous_msp = (struct sftp_multisegment_pdu *)wmem_tree_lookup32_le(sftpd->multisegment_pdus[direction], chan->packet_id);
+                ws_debug("previous_msp=%p, sftp_last_pdu=%d, pinfo->num=%d, captured_length=%u", previous_msp, sftp_last_pdu, pinfo->num, captured_length);
+
+                if (previous_msp && !previous_msp->finished) {
+                        previous_msp->nxtpdu = pinfo->num;
+                        new_msp = pdu_store(chan->packet_id, sftpd->multisegment_pdus[direction], previous_msp->first_frame);
+                        new_msp->plen = previous_msp->plen;
+                        consumed = (previous_msp->running_size + captured_length < new_msp->plen+4)?captured_length:(new_msp->plen+4-previous_msp->running_size);
+                        proto_tree_add_debug_text(tree, "+++consumed = %d", consumed);
+                        new_msp->running_size = previous_msp->running_size + consumed;
+                } else {
+                        previous_msp = NULL;
+                        new_msp = pdu_store(chan->packet_id, sftpd->multisegment_pdus[direction], chan->packet_id);
+                        new_msp->running_size = captured_length;
+                        new_msp->plen = tvb_get_ntohl(tvb, offset);
+//                      fragment_add_check(&sftp_reassembly_table, tvb, offset, pinfo, new_msp->first_frame, GUINT_TO_POINTER(new_msp->first_frame), 0, captured_length, TRUE);
+//                      sftp_last_pdu = pinfo->num;
+                }
+        }
+
+//        guint available = new_msp->running_size
+        ws_debug("plen = %u available = %u offset = %u", new_msp->plen, available, offset);
+        proto_tree_add_debug_text(tree, "SFTP      plen = %u need = %u available = %u / %u offset = %u / running_size = %u", new_msp->plen, new_msp->plen+4, available, new_msp->running_size, offset, new_msp->running_size);
+        if( offset + available < new_msp->plen + 4 ) {          // 32 bits length field
+            pinfo->fragmented = TRUE;
+            tvbuff_t* new_tvb = NULL;
+            fragment_head *frag_sftp = NULL;
+//            frag_sftp = fragment_add_seq_check(&sftp_reassembly_table, tvb, offset, pinfo, sftp_seqid, NULL, /* ID for fragments belonging together */ sftp_num, /* fragment sequence number */ tvb_captured_length_remaining(tvb, offset), /* fragment length - to the end */ TRUE); /* More fragments? */
+//            frag_sftp = fragment_add_check(&sftp_reassembly_table, tvb, offset, pinfo, new_msp->first_frame, GUINT_TO_POINTER(new_msp->first_frame), previous_msp?previous_msp->running_size:0, captured_length, TRUE);
+            gboolean more_frags;
+            more_frags = new_msp->running_size < new_msp->plen+4;
+            proto_tree_add_debug_text(tree, "first_frame = %u.%u, offst = %u, captured_length= %u, more_frags = %u (%u >= %u), previous_msp=%p", new_msp->first_frame >> 4, new_msp->first_frame & 0xF, previous_msp?previous_msp->running_size:0, captured_length, more_frags, new_msp->running_size, new_msp->plen+4, previous_msp);
+//            frag_sftp = fragment_add_check(&sftp_reassembly_table, tvb, offset, pinfo, new_msp->first_frame, GUINT_TO_POINTER(new_msp->first_frame), previous_msp?previous_msp->running_size:0, captured_length, more_frags);
+            consumed = more_frags?captured_length:new_msp->plen+4-(previous_msp?previous_msp->running_size:0);
+            frag_sftp = fragment_add_check(&sftp_reassembly_table, tvb, offset, pinfo, new_msp->first_frame, NULL, previous_msp?previous_msp->running_size:0, consumed, more_frags);
+            if(!previous_msp){
+//                    fragment_set_tot_len(&sftp_reassembly_table, pinfo, new_msp->first_frame, GUINT_TO_POINTER(new_msp->first_frame), new_msp->plen + 4);
+                    fragment_set_tot_len(&sftp_reassembly_table, pinfo, new_msp->first_frame, NULL, new_msp->plen + 4);
+            }
+
+            new_tvb = process_reassembled_data(tvb, offset, pinfo, "Reassembled SFTP", frag_sftp, &sftp_frag_items, NULL, tree);
+
+            proto_tree_add_debug_text(tree, "frag_sftp = %p, new_tvb = %p, tvb_bytes_exist(%u)=%u tot_len = %u", frag_sftp, new_tvb, captured_length, tvb_bytes_exist(tvb, offset, captured_length), fragment_get_tot_len(&sftp_reassembly_table, pinfo, new_msp->first_frame, NULL));
+
+            if(!more_frags){
+                proto_item *frag_tree_item;
+                gpointer orig_key;
+                fragment_head *fd_head = lookup_fd_head(&sftp_reassembly_table, pinfo, new_msp->first_frame, NULL, &orig_key);
+                if(fd_head){
+                        show_fragment_tree(fd_head, &sftp_frag_items, tree, pinfo, tvb, &frag_tree_item);
+                }
+            }
+
+            if (frag_sftp && new_tvb) { /* Reassembled */
+                col_append_str(pinfo->cinfo, COL_INFO, " (Message Reassembled)");
+            } else { /* Not last packet of reassembled Short Message */
+//                col_append_fstr(pinfo->cinfo, COL_INFO, " (Message fragment %u)", sftp_num);
+//                col_append_fstr(pinfo->cinfo, COL_INFO, " (Message fragment X)");
+                col_append_fstr(pinfo->cinfo, COL_INFO, " (Message fragment %u-%u of %u)", previous_msp?previous_msp->running_size:0, new_msp->running_size, new_msp->plen);
+            }
+
+            if (new_tvb) { /* take it all */
+                dissect_reassembled_sftp(new_tvb, pinfo, offset, tree);
+                sftp_last_pdu = -1;
+                new_msp->finished = TRUE;
+                next_tvb = new_tvb;
+            } else { /* make a new subset */
+//                char * flag_string = "XYZ";
+//                char * pdu_type_string = "xXx";
+                /* Just show this as a segment. */
+//                col_add_fstr(pinfo->cinfo, COL_INFO, "[Fragmented %s SFTP %s(off=%u/%u)]", pdu_type_string, flag_string, previous_msp?previous_msp->running_size:0, new_msp->plen);
+
+                next_tvb = tvb_new_subset_remaining(tvb, offset);
+            }
+            pinfo->fragmented = save_fragmented;
+
+            /* we ran out of data: ask for more */
+//            pinfo->desegment_offset = offset;
+//            pinfo->desegment_len = plen - available;
+        }else{
+                consumed = dissect_reassembled_sftp(tvb, pinfo, offset, tree) - offset;
+                new_msp->finished = TRUE;
+                sftp_last_pdu = -1;
+        }
+        proto_tree_add_debug_text(tree, "dissect_sftp %d + %d = %d", offset, consumed, offset + consumed);
+        return offset + consumed;
+}
+static int dissect_reassembled_sftp(tvbuff_t *tvb, packet_info *pinfo, int offset, proto_item *tree)
+{
+        guint slen;
+        guint plen = tvb_get_ntohl(tvb, offset);
+
         wmem_strbuf_t *title = wmem_strbuf_new(wmem_packet_scope(), "SFTP");
         proto_item * sftp_tree = proto_tree_add_subtree(tree, tvb, offset, -1, ett_sftp, NULL, NULL);
         proto_tree_add_item(sftp_tree, hf_ssh_sftp_len, tvb, offset, 4, ENC_BIG_ENDIAN);
@@ -176,6 +467,7 @@ static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
                 wmem_strbuf_append_printf(title, " SSH_FXP_VERSION (%d) version %d", typ, ver);
                 proto_tree_add_item(sftp_tree, hf_ssh_sftp_version, tvb, offset, 4, ENC_BIG_ENDIAN);
                 offset += 4;
+                offset += plen-4;
                 break;
                 }
         case SSH_FXP_OPEN:{
@@ -690,16 +982,61 @@ proto_register_sftp(void)
             FT_STRING, BASE_NONE, NULL, 0x0,
             NULL, HFILL }},
 
+
+    /* Fragment entries */
+    { &hf_sftp_data_fragments,
+      { "DATA fragments", "sftp.data.fragments",
+        FT_NONE, BASE_NONE, NULL, 0x00, "Message fragments", HFILL } },
+
+    { &hf_sftp_data_fragment,
+      { "DATA fragment", "sftp.data.fragment",
+        FT_FRAMENUM, BASE_NONE, NULL, 0x00, "Message fragment", HFILL } },
+
+    { &hf_sftp_data_fragment_overlap,
+      { "DATA fragment overlap", "sftp.data.fragment.overlap", FT_BOOLEAN,
+        BASE_NONE, NULL, 0x0, "Message fragment overlap", HFILL } },
+
+    { &hf_sftp_data_fragment_overlap_conflicts,
+      { "DATA fragment overlapping with conflicting data",
+        "sftp.data.fragment.overlap.conflicts", FT_BOOLEAN, BASE_NONE, NULL,
+        0x0, "Message fragment overlapping with conflicting data", HFILL } },
+
+    { &hf_sftp_data_fragment_multiple_tails,
+      { "DATA has multiple tail fragments", "sftp.data.fragment.multiple_tails",
+        FT_BOOLEAN, BASE_NONE, NULL, 0x0, "Message has multiple tail fragments", HFILL } },
+
+    { &hf_sftp_data_fragment_too_long_fragment,
+      { "DATA fragment too long", "sftp.data.fragment.too_long_fragment",
+        FT_BOOLEAN, BASE_NONE, NULL, 0x0, "Message fragment too long", HFILL } },
+
+    { &hf_sftp_data_fragment_error,
+      { "DATA defragmentation error", "sftp.data.fragment.error",
+        FT_FRAMENUM, BASE_NONE, NULL, 0x00, "Message defragmentation error", HFILL } },
+
+    { &hf_sftp_data_fragment_count,
+      { "DATA fragment count", "sftp.data.fragment.count",
+        FT_UINT32, BASE_DEC, NULL, 0x00, NULL, HFILL } },
+
+    { &hf_sftp_data_reassembled_in,
+      { "Reassembled DATA in frame", "sftp.data.reassembled.in",
+        FT_FRAMENUM, BASE_NONE, NULL, 0x00, "This DATA fragment is reassembled in this frame", HFILL } },
+
+    { &hf_sftp_data_reassembled_length,
+      { "Reassembled DATA length", "sftp.data.reassembled.length",
+        FT_UINT32, BASE_DEC, NULL, 0x00, "The total length of the reassembled payload", HFILL } },
     };
 
     static gint *ett[] = {
         &ett_sftp,
         &ett_sftp_attrs,
+        &ett_sftp_data_fragment,
+        &ett_sftp_data_fragments,
     };
 
     proto_sftp = proto_register_protocol("SFTP Protocol", "SFTP", "sftp");
     proto_register_field_array(proto_sftp, hf, array_length(hf));
     proto_register_subtree_array(ett, array_length(ett));
+    reassembly_table_register(&sftp_reassembly_table, &addresses_ports_reassembly_table_functions);
 
     sftp_handle = register_dissector("sftp", dissect_sftp, proto_sftp);
 }
