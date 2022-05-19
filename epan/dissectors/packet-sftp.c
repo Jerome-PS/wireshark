@@ -328,8 +328,6 @@ static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
         gboolean    direction = (pinfo->destport != pinfo->match_uint)?0:1;
 
         guint captured_length = tvb_captured_length(tvb);
-        gint reported_length = tvb_reported_length(tvb);
-        proto_tree_add_debug_text(tree, "SFTP{%4d}captured_length=%u, reported_length=%d, rcpt_chan=%u", pinfo?(int)pinfo->num:-42, captured_length, reported_length, chan->channel_recipient);
 
         if((conv = find_conversation_pinfo(pinfo, 0)) != NULL) {
         /* Update how far the conversation reaches */
@@ -354,14 +352,12 @@ static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
                 }
         } else {
                 previous_msp = (struct sftp_multisegment_pdu *)wmem_tree_lookup32_le(sftpd->multisegment_pdus[direction], chan->packet_id);
-                ws_debug("previous_msp=%p, sftp_last_pdu=%d, pinfo->num=%d, captured_length=%u", previous_msp, sftp_last_pdu, pinfo->num, captured_length);
 
                 if (previous_msp && !previous_msp->finished) {
                         previous_msp->nxtpdu = pinfo->num;
                         new_msp = pdu_store(chan->packet_id, sftpd->multisegment_pdus[direction], previous_msp->first_frame);
                         new_msp->plen = previous_msp->plen;
                         consumed = (previous_msp->running_size + captured_length < new_msp->plen+4)?captured_length:(new_msp->plen+4-previous_msp->running_size);
-                        proto_tree_add_debug_text(tree, "+++consumed = %d", consumed);
                         new_msp->running_size = previous_msp->running_size + consumed;
                 } else {
                         previous_msp = NULL;
@@ -373,9 +369,6 @@ static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
                 }
         }
 
-//        guint available = new_msp->running_size
-        ws_debug("plen = %u available = %u offset = %u", new_msp->plen, available, offset);
-        proto_tree_add_debug_text(tree, "SFTP      plen = %u need = %u available = %u / %u offset = %u / running_size = %u", new_msp->plen, new_msp->plen+4, available, new_msp->running_size, offset, new_msp->running_size);
         if( offset + available < new_msp->plen + 4 ) {          // 32 bits length field
             pinfo->fragmented = TRUE;
             tvbuff_t* new_tvb = NULL;
@@ -384,7 +377,6 @@ static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
 //            frag_sftp = fragment_add_check(&sftp_reassembly_table, tvb, offset, pinfo, new_msp->first_frame, GUINT_TO_POINTER(new_msp->first_frame), previous_msp?previous_msp->running_size:0, captured_length, TRUE);
             gboolean more_frags;
             more_frags = new_msp->running_size < new_msp->plen+4;
-            proto_tree_add_debug_text(tree, "first_frame = %u.%u, offst = %u, captured_length= %u, more_frags = %u (%u >= %u), previous_msp=%p", new_msp->first_frame >> 4, new_msp->first_frame & 0xF, previous_msp?previous_msp->running_size:0, captured_length, more_frags, new_msp->running_size, new_msp->plen+4, previous_msp);
 //            frag_sftp = fragment_add_check(&sftp_reassembly_table, tvb, offset, pinfo, new_msp->first_frame, GUINT_TO_POINTER(new_msp->first_frame), previous_msp?previous_msp->running_size:0, captured_length, more_frags);
             consumed = more_frags?captured_length:new_msp->plen+4-(previous_msp?previous_msp->running_size:0);
             frag_sftp = fragment_add_check(&sftp_reassembly_table, tvb, offset, pinfo, new_msp->first_frame, NULL, previous_msp?previous_msp->running_size:0, consumed, more_frags);
@@ -394,8 +386,6 @@ static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
             }
 
             new_tvb = process_reassembled_data(tvb, offset, pinfo, "Reassembled SFTP", frag_sftp, &sftp_frag_items, NULL, tree);
-
-            proto_tree_add_debug_text(tree, "frag_sftp = %p, new_tvb = %p, tvb_bytes_exist(%u)=%u tot_len = %u", frag_sftp, new_tvb, captured_length, tvb_bytes_exist(tvb, offset, captured_length), fragment_get_tot_len(&sftp_reassembly_table, pinfo, new_msp->first_frame, NULL));
 
             if(!more_frags){
                 proto_item *frag_tree_item;
@@ -437,7 +427,6 @@ static int dissect_sftp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
                 new_msp->finished = TRUE;
                 sftp_last_pdu = -1;
         }
-        proto_tree_add_debug_text(tree, "dissect_sftp %d + %d = %d", offset, consumed, offset + consumed);
         return offset + consumed;
 }
 static int dissect_reassembled_sftp(tvbuff_t *tvb, packet_info *pinfo, int offset, proto_item *tree)

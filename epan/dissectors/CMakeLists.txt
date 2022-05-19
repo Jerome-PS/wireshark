@@ -1831,6 +1831,7 @@ set(DISSECTOR_SRC
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-sscf-nni.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-sscop.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-ssh.c
+	${CMAKE_CURRENT_SOURCE_DIR}/packet-ssh-shell.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-sstp.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-ssyncp.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-stanag4607.c

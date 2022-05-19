@@ -403,6 +403,7 @@ static gboolean ssh_desegment = TRUE;
 
 static dissector_handle_t ssh_handle;
 static dissector_handle_t sftp_handle=NULL;
+static dissector_handle_t shell_handle=NULL;
 
 static const char   *pref_keylog_file;
 static FILE         *ssh_keylog_file;
@@ -1423,10 +1424,9 @@ static int ssh_dissect_kex_dh_gex(guint8 msg_code, tvbuff_t *tvb,
         if (!PINFO_FD_VISITED(pinfo)) {
             ssh_read_f(tvb, offset, global_data);
             // f (server ephemeral key public part), K_S (host key)
+            ssh_choose_enc_mac(global_data);
             ssh_keylog_hash_write_secret(global_data);
         }
-        ssh_choose_enc_mac(global_data);
-        ssh_keylog_hash_write_secret(global_data);
         offset += ssh_tree_add_mpint(tvb, offset, tree, hf_ssh_dh_f);
         offset += ssh_tree_add_hostsignature(tvb, pinfo, offset, tree, "KEX host signature",
                 ett_key_exchange_host_sig, global_data);
@@ -2559,13 +2559,13 @@ static void ssh_derive_symmetric_keys(ssh_bignum *secret, gchar *exchange_hash,
         } else if (CIPHER_AES256_CBC == peer_data->cipher_id || CIPHER_AES256_CTR == peer_data->cipher_id || CIPHER_AES256_GCM == peer_data->cipher_id) {
             need = 32;
         } else {
-            ssh_debug_printf("ssh: cipher (%d) is unknown or not set\n", peer_data->cipher_id);
+            ssh_debug_printf("ssh: derive_symmetric_keys cipher (%d) is unknown or not set\n", peer_data->cipher_id);
             ssh_debug_flush();
         }
         if(peer_data->mac_id == CIPHER_MAC_SHA2_256){
             need = 32;
         }else{
-            ssh_debug_printf("ssh: MAC (%d) is unknown or not set\n", peer_data->mac_id);
+            ssh_debug_printf("ssh: derive_symmetric_keys MAC (%d) is unknown or not set\n", peer_data->mac_id);
             ssh_debug_flush();
         }
         if (we_need<need) {
@@ -2874,7 +2874,7 @@ ssh_decryption_setup_cipher(struct ssh_peer_data *peer_data,
         }
 
     } else {
-        ssh_debug_printf("ssh: cipher (%d) is unknown or not set\n", peer_data->cipher_id);
+        ssh_debug_printf("ssh: setup_cipher cipher (%d) is unknown or not set\n", peer_data->cipher_id);
     }
 }
 
@@ -3144,13 +3144,9 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
                 peer_data->sequence_number++;
                 ssh_debug_printf("%s->sequence_number++ > %d\n", is_response?"server":"client", peer_data->sequence_number);
 
-// TODO: process fragments
                 message->plain_data = plain;
                 message->data_len   = message_length + 4;
 
-                proto_tree_add_debug_text(tree, "[chacha]<%u>plain = %p, message_length = %u", pinfo->num, plain, message_length);
-
-//AFAC                ssh_calc_mac(peer_data, message->sequence_number, message->plain_data, message->data_len, message->calc_mac);
                 gchar poly_key[32], iv[16];
 
                 memset(poly_key, 0, 32);
@@ -3405,7 +3401,6 @@ ssh_decrypt_packet(tvbuff_t *tvb, packet_info *pinfo,
                 peer_data->sequence_number++;
                 ssh_debug_printf("%s->sequence_number++ > %d\n", is_response?"server":"client", peer_data->sequence_number);
 
-// TODO: process fragments
                 message->plain_data = plain;
                 message->data_len   = message_length + 4;
 
@@ -3926,7 +3921,7 @@ ssh_dissect_connection_specific(tvbuff_t *packet_tvb, packet_info *pinfo,
                 proto_tree_add_item(msg_type_tree, hf_ssh_channel_data_len, packet_tvb, offset, 4, ENC_BIG_ENDIAN);
                 offset += 4;
                 ssh_channel_info_t * ci = get_channel_info_for_channel(peer_data, uiNumChannel);
-                if(ci->subdissector_handle){
+                if(ci && ci->subdissector_handle){
                         guint   dlen;
                         guint   processed_len = 0;
                         guint   subframe_idx = 0;
@@ -3936,9 +3931,7 @@ ssh_dissect_connection_specific(tvbuff_t *packet_tvb, packet_info *pinfo,
                             chan.packet_id = (pinfo->num << 4) + subframe_idx;                                                      // Well, this will cause problems if we are logging HUGE traces.
                             tvbuff_t *next_tvb = tvb_new_subset_length(packet_tvb, offset + processed_len, slen - processed_len);
                             dlen = call_dissector_with_data(ci->subdissector_handle, next_tvb, pinfo, msg_type_tree, &chan);
-                            proto_tree_add_debug_text(msg_type_tree, "SSH {%4d}call_dissector_with_data=>%d dlen = %d offset = %d processed_len = %d", pinfo?(int)pinfo->num:-42, dlen + (offset + processed_len), dlen, offset, processed_len);
                             processed_len += dlen;
-                            proto_tree_add_debug_text(msg_type_tree, "[%d]processed_len = %d dlen = %d slen = %d", subframe_idx, processed_len, dlen, slen);
                             subframe_idx += 1;
                             if(subframe_idx>2){break;}
                         }
@@ -3975,6 +3968,8 @@ ssh_dissect_connection_specific(tvbuff_t *packet_tvb, packet_info *pinfo,
                         set_subdissector_for_channel(peer_data, uiNumChannel, subsystem_name);
                         proto_tree_add_item(msg_type_tree, hf_ssh_subsystem_name, packet_tvb, offset, slen, ENC_UTF_8);
                         offset += slen;
+                }else if (0 == strcmp(request_name, "shell")) {
+                        set_subdissector_for_channel(peer_data, uiNumChannel, request_name);
                 }else if (0 == strcmp(request_name, "exit-status")) {
                         proto_tree_add_item(msg_type_tree, hf_ssh_exit_status, packet_tvb, offset, 4, ENC_BIG_ENDIAN);
                         offset += 4;
@@ -4039,6 +4034,8 @@ set_subdissector_for_channel(struct ssh_peer_data *peer_data, guint uiNumChannel
         }
         if(0 == strcmp(subsystem_name, "sftp")) {
             ci->subdissector_handle = sftp_handle;
+        } else if(0 == strcmp(subsystem_name, "shell")) {
+            ci->subdissector_handle = shell_handle;
         } else {
             ci->subdissector_handle = NULL;
         }
@@ -5014,6 +5011,7 @@ proto_reg_handoff_ssh(void)
     dissector_add_uint("sctp.port", SCTP_PORT_SSH, ssh_handle);
     dissector_add_uint("sctp.ppi", SSH_PAYLOAD_PROTOCOL_ID, ssh_handle);
     sftp_handle = find_dissector("sftp");
+    shell_handle = find_dissector("ssh-shell");
 }
 
 /*
